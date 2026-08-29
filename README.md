@@ -9,6 +9,23 @@ Dire Wolf, forwards eligible packets to APRS-IS, and presents the local radio
 activity in a browser. The dashboard includes received packets, station
 positions, system diagnostics, Wi-Fi state, and RTL-SDR calibration controls.
 
+## Screenshots
+
+All callsigns, positions, IP addresses, network names, packet contents, logs,
+and operating values shown below are synthetic demonstration data.
+
+### Overview
+
+![APRSgate dashboard overview with synthetic data](docs/images/dashboard-overview.png)
+
+### Received-station map
+
+![APRSgate received-station map with synthetic data](docs/images/dashboard-map.png)
+
+### System diagnostics
+
+![APRSgate system diagnostics with synthetic data](docs/images/dashboard-status.png)
+
 ## Features
 
 - Receive-only APRS iGate for the European 2 m APRS frequency, 144.800 MHz
