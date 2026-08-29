@@ -1,0 +1,14 @@
+[Unit]
+Description=APRSgate WiFi setup portal
+Wants=NetworkManager.service
+After=NetworkManager.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/aprsgate-wifi
+ExecStart=/usr/bin/python3 /opt/aprsgate-dashboard/wifi_portal.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

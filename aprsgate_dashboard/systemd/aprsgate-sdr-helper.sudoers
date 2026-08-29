@@ -1,0 +1,1 @@
+aprsgate ALL=(root) NOPASSWD: /usr/local/sbin/aprsgate-sdr-helper *

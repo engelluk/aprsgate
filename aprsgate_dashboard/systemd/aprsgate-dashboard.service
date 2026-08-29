@@ -1,0 +1,17 @@
+[Unit]
+Description=APRSgate local web dashboard
+After=network-online.target direwolf-sdr.service
+Wants=network-online.target
+
+[Service]
+User=aprsgate
+Group=aprsgate
+WorkingDirectory=/opt/aprsgate-dashboard
+StateDirectory=aprsgate-dashboard
+EnvironmentFile=-/etc/default/aprsgate-dashboard
+ExecStart=/usr/bin/python3 /opt/aprsgate-dashboard/app.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

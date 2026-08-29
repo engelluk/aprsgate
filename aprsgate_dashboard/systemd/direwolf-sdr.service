@@ -1,0 +1,16 @@
+[Unit]
+Description=Dire Wolf APRS iGate via RTL-SDR
+Documentation=man:direwolf
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=direwolf
+SupplementaryGroups=plugdev audio dialout
+EnvironmentFile=-/etc/default/aprsgate-sdr
+ExecStart=/bin/sh -c 'bias_arg=""; if [ "${RTL_BIAS_T:-0}" = "1" ]; then bias_arg="-T"; fi; /usr/bin/rtl_fm -d "${RTL_DEVICE:-0}" -f "${RTL_FREQUENCY:-144.800M}" -M fm -s "${RTL_SAMPLE_RATE:-24000}" -p "${RTL_PPM:-0}" -g "${RTL_GAIN:-35}" $bias_arg - | /usr/bin/direwolf -c /etc/direwolf-sdr.conf -n 1 -r "${RTL_SAMPLE_RATE:-24000}" -b 16 -'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

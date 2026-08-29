@@ -1,0 +1,16 @@
+[Unit]
+Description=APRSgate external WiFi rebind and failover
+Wants=NetworkManager.service
+After=NetworkManager.service network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/aprsgate-wifi
+ExecStartPre=/bin/sleep 8
+ExecStart=/usr/local/sbin/aprsgate-wifi-failover
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
