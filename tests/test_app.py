@@ -139,6 +139,8 @@ class MapPayloadTests(unittest.TestCase):
         self.assertEqual("digipeated", feature["properties"]["reception"])
         self.assertEqual(2, feature["properties"]["packet_count"])
         self.assertEqual(2, len(payload["tracks"]["DL1ABC-9"]))
+        self.assertEqual("direct", payload["tracks"]["DL1ABC-9"][0]["reception"])
+        self.assertEqual("digipeated", payload["tracks"]["DL1ABC-9"][1]["reception"])
 
     def test_map_callsign_filter_is_case_insensitive(self):
         packets = [

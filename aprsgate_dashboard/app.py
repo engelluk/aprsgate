@@ -521,6 +521,7 @@ INDEX_HTML = r"""<!doctype html>
     .map-legend span { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
     .legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); }
     .legend-dot.digipeated { background: var(--yellow); }
+    .legend-dot.track { width: 6px; height: 6px; opacity: .6; }
     .legend-dot.gateway { background: var(--blue); }
 
     .leaflet-container { font-family: "Courier New", ui-monospace, monospace; }
@@ -1015,6 +1016,7 @@ INDEX_HTML = r"""<!doctype html>
         const entries = [
           ["direct", "Direkt"],
           ["digipeated", "Digipeater"],
+          ["track", "Position"],
           ["gateway", "Gateway"]
         ];
         for (const entry of entries) {
@@ -1063,6 +1065,26 @@ INDEX_HTML = r"""<!doctype html>
         popupRow("Kommentar", properties.comment)
       );
       return popup;
+    }
+
+    function trackPointPopup(callsign, point) {
+      const popup = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "popup-call";
+      title.textContent = callsign;
+      popup.appendChild(title);
+      const reception = point.reception === "direct" ? "direkt" : "via Digipeater";
+      popup.append(
+        popupRow("Empfang", reception),
+        popupRow("Gehoert", point.time_local || point.time),
+        popupRow("Position", `${Number(point.latitude).toFixed(5)}, ${Number(point.longitude).toFixed(5)}`)
+      );
+      return popup;
+    }
+
+    function sameCoordinatePair(left, right) {
+      return Math.abs(Number(left[0]) - Number(right[0])) < 0.000001
+        && Math.abs(Number(left[1]) - Number(right[1])) < 0.000001;
     }
 
     function drawSelectedTrack() {
@@ -1141,6 +1163,20 @@ INDEX_HTML = r"""<!doctype html>
           maxDistance = maxDistance === null ? properties.distance_km : Math.max(maxDistance, properties.distance_km);
         }
         bounds.push(position);
+        for (const point of (mapData.tracks[properties.callsign] || [])) {
+          const pointCoordinates = [point.longitude, point.latitude];
+          if (sameCoordinatePair(pointCoordinates, coordinates)) continue;
+          const trackPosition = [point.latitude, point.longitude];
+          const trackDirect = point.reception === "direct";
+          bounds.push(trackPosition);
+          L.circleMarker(trackPosition, {
+            radius: 4,
+            color: "#081018",
+            weight: 1,
+            fillColor: trackDirect ? "#7ef3e2" : "#f2bf4d",
+            fillOpacity: .55
+          }).bindTooltip(properties.callsign, {direction: "top"}).bindPopup(trackPointPopup(properties.callsign, point)).addTo(stationLayer);
+        }
         const marker = L.circleMarker(position, {
           radius: 7,
           color: "#081018",
@@ -2194,6 +2230,7 @@ def map_payload(hours=24, filter_text="", now=None):
             "longitude": longitude,
             "time": packet.get("time", ""),
             "time_local": packet.get("time_local", ""),
+            "reception": "direct" if packet_is_direct(packet) else "digipeated",
         })
 
     features = []
