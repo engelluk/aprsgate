@@ -1115,11 +1115,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function visibleMapFeatures() {
-      if (!mapData) return [];
-      const reception = els.receptionFilter.value;
-      return mapData.stations.features.filter(feature =>
-        reception === "all" || feature.properties.reception === reception
-      );
+      return mapData ? mapData.stations.features : [];
     }
 
     function renderStationMap(fitBounds = false) {
@@ -1241,6 +1237,7 @@ INDEX_HTML = r"""<!doctype html>
         const query = new URLSearchParams({hours: String(mapHours)});
         const filter = els.mapFilter.value.trim();
         if (filter) query.set("filter", filter);
+        query.set("reception", els.receptionFilter.value);
         const response = await fetch("/api/map?" + query.toString(), {cache: "no-store"});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         mapData = await response.json();
@@ -1494,7 +1491,7 @@ INDEX_HTML = r"""<!doctype html>
       clearTimeout(mapFilterTimer);
       mapFilterTimer = setTimeout(() => loadMapData(true), 350);
     });
-    els.receptionFilter.addEventListener("change", () => renderStationMap(true));
+    els.receptionFilter.addEventListener("change", () => loadMapData(true));
     els.showTrack.addEventListener("change", drawSelectedTrack);
     cal.measure.addEventListener("click", measureCalibration);
     cal.apply.addEventListener("click", applyCalibration);
@@ -2189,7 +2186,7 @@ def packet_is_direct(packet):
     return "*" not in str(packet.get("path", ""))
 
 
-def map_payload(hours=24, filter_text="", now=None):
+def map_payload(hours=24, filter_text="", reception="all", now=None):
     config = parse_config()
     gateway_latitude, gateway_longitude = config_position_decimal(config["position"])
     now = now or datetime.now(timezone.utc)
@@ -2211,6 +2208,11 @@ def map_payload(hours=24, filter_text="", now=None):
         received_at = packet_datetime(packet)
         if cutoff and (received_at is None or received_at < cutoff):
             continue
+        is_direct = packet_is_direct(packet)
+        if reception == "direct" and not is_direct:
+            continue
+        if reception == "digipeated" and is_direct:
+            continue
 
         positioned_packets += 1
         station = stations.setdefault(source, {
@@ -2221,7 +2223,7 @@ def map_payload(hours=24, filter_text="", now=None):
             "track": [],
         })
         station["packet_count"] += 1
-        if packet_is_direct(packet):
+        if is_direct:
             station["direct_count"] += 1
         else:
             station["digipeated_count"] += 1
@@ -2230,7 +2232,7 @@ def map_payload(hours=24, filter_text="", now=None):
             "longitude": longitude,
             "time": packet.get("time", ""),
             "time_local": packet.get("time_local", ""),
-            "reception": "direct" if packet_is_direct(packet) else "digipeated",
+            "reception": "direct" if is_direct else "digipeated",
         })
 
     features = []
@@ -2493,7 +2495,10 @@ class Handler(BaseHTTPRequestHandler):
             if hours not in (0, 1, 24, 168):
                 hours = 24
             filter_text = query.get("filter", [""])[0][:40]
-            self.send_json(map_payload(hours, filter_text))
+            reception = query.get("reception", ["all"])[0]
+            if reception not in ("all", "direct", "digipeated"):
+                reception = "all"
+            self.send_json(map_payload(hours, filter_text, reception))
         elif path == "/api/calibration":
             self.send_json(calibration_status())
         elif path == "/export.xlsx":

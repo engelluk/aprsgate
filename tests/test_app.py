@@ -169,6 +169,37 @@ class MapPayloadTests(unittest.TestCase):
             feature["properties"]["callsign"] for feature in payload["stations"]["features"]
         ])
 
+    def test_map_reception_filter_uses_matching_packets_not_latest_station_packet(self):
+        packets = [
+            self.packet("DM6LE-7", "2026-09-01T08:25:13+02:00", 49.456667, 11.029667, "DB0VOX*"),
+            self.packet("DM6LE-7", "2026-09-01T08:25:11+02:00", 49.456667, 11.029667, "WIDE1-1,WIDE2-1"),
+            self.packet("DM6LE-7", "2026-09-01T08:27:50+02:00", 49.455167, 11.032667, "WIDE1-1,WIDE2-1"),
+        ]
+        config = {
+            "callsign": "N0CALL-10",
+            "position": "51^30.00N 000^07.00W",
+            "frequency": "144.800 MHz",
+            "beacon": "",
+            "igate_server": "euro.aprs2.net",
+            "igate_port": 14580,
+        }
+
+        with patch.object(app, "stored_packets_with_latest", return_value=packets), patch.object(
+            app, "parse_config", return_value=config
+        ):
+            payload = app.map_payload(0, "DM6LE-7", "direct")
+
+        self.assertEqual(1, payload["summary"]["station_count"])
+        self.assertEqual(2, payload["summary"]["position_packet_count"])
+        feature = payload["stations"]["features"][0]
+        self.assertEqual("direct", feature["properties"]["reception"])
+        self.assertEqual(2, feature["properties"]["direct_count"])
+        self.assertEqual(0, feature["properties"]["digipeated_count"])
+        self.assertEqual(2, len(payload["tracks"]["DM6LE-7"]))
+        self.assertTrue(all(
+            point["reception"] == "direct" for point in payload["tracks"]["DM6LE-7"]
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
