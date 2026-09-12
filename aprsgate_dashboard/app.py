@@ -4,6 +4,7 @@ import math
 import os
 import re
 import subprocess
+import threading
 import zipfile
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -19,6 +20,7 @@ PORT = int(os.environ.get("APRSGATE_DASHBOARD_PORT", "8080"))
 SDR_HELPER = "/usr/local/sbin/aprsgate-sdr-helper"
 PACKET_STORE = os.environ.get("APRSGATE_PACKET_STORE", "/var/lib/aprsgate-dashboard/packets.jsonl")
 MAX_STORED_PACKETS = int(os.environ.get("APRSGATE_MAX_STORED_PACKETS", "50000"))
+PACKET_STORE_LOCK = threading.Lock()
 DIAGNOSTIC_SERVICES = (
     "aprsgate-dashboard.service",
     "direwolf-sdr.service",
@@ -2109,20 +2111,21 @@ def write_stored_packets(packets):
 
 
 def stored_packets_with_latest():
-    stored = read_stored_packets()
-    known = {packet_key(packet) for packet in stored}
-    added = False
-    latest = parse_packets(packet_journal_lines())
-    for packet in reversed(latest):
-        key = packet_key(packet)
-        if key in known:
-            continue
-        stored.append(packet)
-        known.add(key)
-        added = True
-    if added:
-        write_stored_packets(stored)
-    return stored[-MAX_STORED_PACKETS:][::-1]
+    with PACKET_STORE_LOCK:
+        stored = read_stored_packets()
+        known = {packet_key(packet) for packet in stored}
+        added = False
+        latest = parse_packets(packet_journal_lines())
+        for packet in reversed(latest):
+            key = packet_key(packet)
+            if key in known:
+                continue
+            stored.append(packet)
+            known.add(key)
+            added = True
+        if added:
+            write_stored_packets(stored)
+        return stored[-MAX_STORED_PACKETS:][::-1]
 
 
 def filtered_packets(filter_text=""):

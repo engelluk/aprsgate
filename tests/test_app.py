@@ -1,4 +1,7 @@
 import importlib.util
+import json
+import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -199,6 +202,40 @@ class MapPayloadTests(unittest.TestCase):
         self.assertTrue(all(
             point["reception"] == "direct" for point in payload["tracks"]["DM6LE-7"]
         ))
+
+
+class PacketStoreTests(unittest.TestCase):
+    def test_parallel_updates_do_not_race_on_temporary_file(self):
+        packet = {
+            "time": "2026-09-12T12:00:00+00:00",
+            "raw": "DL1ABC>APRS:>test",
+        }
+        errors = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = str(Path(directory) / "packets.jsonl")
+
+            def update_store():
+                try:
+                    app.stored_packets_with_latest()
+                except Exception as exc:
+                    errors.append(exc)
+
+            with (
+                patch.object(app, "PACKET_STORE", store),
+                patch.object(app, "packet_journal_lines", return_value=[]),
+                patch.object(app, "parse_packets", return_value=[packet]),
+            ):
+                threads = [threading.Thread(target=update_store) for _ in range(8)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+            self.assertEqual([], errors)
+            with open(store, "r", encoding="utf-8") as handle:
+                stored = [json.loads(line) for line in handle]
+            self.assertEqual([packet], stored)
 
 
 if __name__ == "__main__":
