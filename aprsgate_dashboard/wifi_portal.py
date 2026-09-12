@@ -16,6 +16,7 @@ WIFI_DEVICE = os.environ.get("APRSGATE_WIFI_DEVICE", "wlan0")
 AP_SSID = os.environ.get("APRSGATE_SETUP_SSID", "APRSgate-Setup")
 AP_PASSWORD = os.environ.get("APRSGATE_SETUP_PASSWORD", "")
 AP_CONNECTION = os.environ.get("APRSGATE_SETUP_CONNECTION", "aprsgate-setup-ap")
+FALLBACK_CONNECTION = os.environ.get("APRSGATE_FALLBACK_WIFI_CONNECTION", "")
 CHECK_INTERVAL_SECONDS = int(os.environ.get("APRSGATE_WIFI_CHECK_INTERVAL", "30"))
 
 
@@ -289,7 +290,11 @@ def known_connections():
     names = []
     for line in result.stdout.splitlines():
         parts = line.rsplit(":", 1)
-        if len(parts) == 2 and parts[1] == "802-11-wireless" and parts[0] != AP_CONNECTION:
+        if (
+            len(parts) == 2
+            and parts[1] == "802-11-wireless"
+            and parts[0] not in {AP_CONNECTION, FALLBACK_CONNECTION}
+        ):
             names.append(parts[0])
     return names
 
@@ -331,8 +336,11 @@ def stop_setup_ap():
 
 def try_known_connections():
     for name in known_connections():
+        # Failover may have restored connectivity while this loop was running.
+        if is_connected():
+            return True
         print(f"wifi monitor: trying known connection {name}", flush=True)
-        result = run_nmcli("connection", "up", name)
+        result = run_nmcli("connection", "up", name, "ifname", WIFI_DEVICE)
         if result.returncode == 0 and is_connected():
             print(f"wifi monitor: connected via {name}", flush=True)
             return True

@@ -7,6 +7,7 @@ FALLBACK_DEVICE="${APRSGATE_FALLBACK_WIFI_DEVICE:-wlan0}"
 FALLBACK_CONNECTION="${APRSGATE_FALLBACK_WIFI_CONNECTION:?APRSGATE_FALLBACK_WIFI_CONNECTION is required}"
 USB_VENDOR="${APRSGATE_PRIMARY_USB_VENDOR:-}"
 USB_PRODUCT="${APRSGATE_PRIMARY_USB_PRODUCT:-}"
+USB_DRIVER="${APRSGATE_PRIMARY_USB_DRIVER:-}"
 CHECK_INTERVAL="${APRSGATE_WIFI_FAILOVER_INTERVAL:-15}"
 
 last_state=""
@@ -49,10 +50,13 @@ bind_primary_device() {
   local interface_path
   local usb_path
   local interface_name
+  local bind_path
 
-  [[ -n "$USB_VENDOR" && -n "$USB_PRODUCT" ]] || return 1
+  [[ -n "$USB_VENDOR" && -n "$USB_PRODUCT" && -n "$USB_DRIVER" ]] || return 1
 
-  modprobe rtl8xxxu >/dev/null 2>&1 || true
+  modprobe "$USB_DRIVER" >/dev/null 2>&1 || true
+  bind_path="/sys/bus/usb/drivers/${USB_DRIVER}/bind"
+  [[ -w "$bind_path" ]] || return 1
 
   for interface_path in /sys/bus/usb/devices/*:*; do
     usb_path="${interface_path%:*}"
@@ -62,7 +66,7 @@ bind_primary_device() {
 
     interface_name="${interface_path##*/}"
     if [[ ! -L "${interface_path}/driver" ]]; then
-      printf '%s' "$interface_name" > /sys/bus/usb/drivers/rtl8xxxu/bind 2>/dev/null || true
+      printf '%s' "$interface_name" > "$bind_path" 2>/dev/null || true
     fi
 
     sleep 2
