@@ -349,7 +349,8 @@ def ensure_setup_ap():
         run_nmcli("connection", "modify", AP_CONNECTION, "wifi-sec.key-mgmt", "wpa-psk", check=True)
         run_nmcli("connection", "modify", AP_CONNECTION, "wifi-sec.psk", AP_PASSWORD, check=True)
         run_nmcli("connection", "modify", AP_CONNECTION, "connection.autoconnect", "no", check=True)
-    run_nmcli("connection", "up", AP_CONNECTION, check=True)
+    run_nmcli("connection", "modify", AP_CONNECTION, "connection.interface-name", WIFI_DEVICE, check=True)
+    run_nmcli("connection", "up", AP_CONNECTION, "ifname", WIFI_DEVICE, check=True)
 
 
 def stop_setup_ap():
@@ -413,13 +414,20 @@ def validate_runtime_config():
 
 
 def monitor_wifi():
+    offline_checks = 0
     while True:
         try:
             with wifi_lock():
                 if is_connected():
+                    offline_checks = 0
                     stop_setup_ap()
-                elif not setup_ap_active():
+                elif setup_ap_active():
+                    offline_checks = 0
+                else:
+                    offline_checks += 1
+                if offline_checks >= 2:
                     ensure_setup_ap()
+                    offline_checks = 0
         except Exception as error:
             print(f"wifi monitor: {error}", flush=True)
         time.sleep(CHECK_INTERVAL_SECONDS)

@@ -46,7 +46,9 @@ stays connected. The portal records a newly selected Wi-Fi profile in
 `/var/lib/aprsgate-wifi/primary-profile`, which the failover service then uses.
 Both services coordinate changes through `/run/lock/aprsgate-wifi.lock`.
 If neither adapter can reach its gateway, the failover marks the system offline
-so the portal can start its setup access point. Gateway reachability checks
+so the portal can start its setup access point after two monitor checks. The
+setup AP profile is always bound to the configured portal interface, including
+when an older profile already exists. Gateway reachability checks
 the local WLAN path; it does not prove that the internet is available.
 
 For a fixed repeater and band, configure the NetworkManager primary profile

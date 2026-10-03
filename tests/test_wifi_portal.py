@@ -57,18 +57,44 @@ class ConnectionSelectionTests(unittest.TestCase):
         class StopMonitor(Exception):
             pass
 
+        sleeps = 0
+
+        def sleep_once(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 2:
+                raise StopMonitor
+
         with (
             patch.object(portal, "wifi_lock", return_value=nullcontext()),
             patch.object(portal, "is_connected", return_value=False),
             patch.object(portal, "setup_ap_active", return_value=False),
             patch.object(portal, "ensure_setup_ap") as ensure_setup_ap,
             patch.object(portal, "run_nmcli") as run_nmcli,
-            patch.object(portal.time, "sleep", side_effect=StopMonitor),
+            patch.object(portal.time, "sleep", side_effect=sleep_once),
         ):
             with self.assertRaises(StopMonitor):
                 portal.monitor_wifi()
         ensure_setup_ap.assert_called_once()
         run_nmcli.assert_not_called()
+
+    def test_setup_ap_rebinds_existing_profile_to_portal_device(self):
+        with (
+            patch.object(portal, "setup_ap_active", return_value=False),
+            patch.object(
+                portal,
+                "run_nmcli",
+                return_value=SimpleNamespace(returncode=0, stdout=portal.AP_CONNECTION + "\n"),
+            ) as run_nmcli,
+        ):
+            portal.ensure_setup_ap()
+        run_nmcli.assert_any_call(
+            "connection", "modify", portal.AP_CONNECTION,
+            "connection.interface-name", portal.WIFI_DEVICE, check=True,
+        )
+        run_nmcli.assert_any_call(
+            "connection", "up", portal.AP_CONNECTION, "ifname", portal.WIFI_DEVICE, check=True,
+        )
 
     def test_new_connection_becomes_failover_primary(self):
         def nmcli(*args, **_kwargs):
