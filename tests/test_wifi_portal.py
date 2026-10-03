@@ -29,6 +29,15 @@ class RuntimeConfigTests(unittest.TestCase):
 
 
 class ConnectionSelectionTests(unittest.TestCase):
+    def test_active_ssid_prefers_client_over_setup_ap(self):
+        output = f"yes:{portal.AP_SSID}\nyes:hechtangels\n"
+        with patch.object(
+            portal,
+            "run_nmcli",
+            return_value=SimpleNamespace(returncode=0, stdout=output),
+        ):
+            self.assertEqual("hechtangels", portal.active_ssid())
+
     def test_offline_signal_overrides_network_manager_connected_state(self):
         with (
             patch.object(portal.os.path, "exists", return_value=True),
@@ -68,6 +77,7 @@ class ConnectionSelectionTests(unittest.TestCase):
         with (
             patch.object(portal, "wifi_lock", return_value=nullcontext()),
             patch.object(portal, "is_connected", return_value=False),
+            patch.object(portal, "active_ssid", return_value=""),
             patch.object(portal, "setup_ap_active", return_value=False),
             patch.object(portal, "ensure_setup_ap") as ensure_setup_ap,
             patch.object(portal, "run_nmcli") as run_nmcli,
@@ -77,6 +87,23 @@ class ConnectionSelectionTests(unittest.TestCase):
                 portal.monitor_wifi()
         ensure_setup_ap.assert_called_once()
         run_nmcli.assert_not_called()
+
+    def test_monitor_keeps_ap_off_while_fallback_is_associated(self):
+        class StopMonitor(Exception):
+            pass
+
+        with (
+            patch.object(portal, "wifi_lock", return_value=nullcontext()),
+            patch.object(portal, "is_connected", return_value=False),
+            patch.object(portal, "active_ssid", return_value="hechtangels"),
+            patch.object(portal, "stop_setup_ap") as stop_setup_ap,
+            patch.object(portal, "ensure_setup_ap") as ensure_setup_ap,
+            patch.object(portal.time, "sleep", side_effect=StopMonitor),
+        ):
+            with self.assertRaises(StopMonitor):
+                portal.monitor_wifi()
+        stop_setup_ap.assert_called_once()
+        ensure_setup_ap.assert_not_called()
 
     def test_setup_ap_rebinds_existing_profile_to_portal_device(self):
         with (

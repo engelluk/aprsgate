@@ -293,11 +293,14 @@ def active_ssid():
     result = run_nmcli("-t", "-f", "ACTIVE,SSID", "dev", "wifi")
     if result.returncode != 0:
         return ""
+    setup_ssid = ""
     for line in result.stdout.splitlines():
         fields = line.split(":", 1)
         if len(fields) == 2 and fields[0] == "yes":
-            return fields[1]
-    return ""
+            if fields[1] != AP_SSID:
+                return fields[1]
+            setup_ssid = fields[1]
+    return setup_ssid
 
 
 def setup_ap_active():
@@ -418,7 +421,7 @@ def monitor_wifi():
     while True:
         try:
             with wifi_lock():
-                if is_connected():
+                if is_connected() or (ssid := active_ssid()) and ssid != AP_SSID:
                     offline_checks = 0
                     stop_setup_ap()
                 elif setup_ap_active():
