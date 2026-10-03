@@ -52,11 +52,13 @@ when an older profile already exists. An associated client network keeps the
 setup AP off even if a gateway check temporarily reports offline. Gateway reachability checks
 the local WLAN path; it does not prove that the internet is available.
 
-For a fixed repeater and band, configure the NetworkManager primary profile
-on the device. For example, `nmcli connection modify primary-wifi
-802-11-wireless.band bg 802-11-wireless.channel 1 802-11-wireless.bssid
-AA:BB:CC:DD:EE:FF`; reconnect once to apply these values. Use the actual
-profile name, channel, and BSSID at your installation.
+For a specific repeater on 2.4 GHz, set the NetworkManager primary profile's
+band and BSSID but leave its channel unset. For example, `nmcli connection
+modify primary-wifi 802-11-wireless.band bg 802-11-wireless.bssid
+AA:BB:CC:DD:EE:FF 802-11-wireless.channel ''`. Use the repeater's 2.4 GHz
+BSSID, not the client's MAC address. A fixed channel prevents reconnection if
+the repeater's automatic channel selection changes it. BSSID pinning also
+disables roaming to other mesh nodes; remove it if roaming is preferred.
 
 ## Installation
 
