@@ -9,8 +9,17 @@ USB_VENDOR="${APRSGATE_PRIMARY_USB_VENDOR:-}"
 USB_PRODUCT="${APRSGATE_PRIMARY_USB_PRODUCT:-}"
 USB_DRIVER="${APRSGATE_PRIMARY_USB_DRIVER:-}"
 CHECK_INTERVAL="${APRSGATE_WIFI_FAILOVER_INTERVAL:-15}"
+PROFILE_FILE="${APRSGATE_PRIMARY_PROFILE_FILE:-/var/lib/aprsgate-wifi/primary-profile}"
+LOCK_FILE="${APRSGATE_WIFI_LOCK_FILE:-/run/lock/aprsgate-wifi.lock}"
+OFFLINE_FILE="${APRSGATE_WIFI_OFFLINE_FILE:-/run/aprsgate-wifi.offline}"
+SETUP_CONNECTION="${APRSGATE_SETUP_CONNECTION:-aprsgate-setup-ap}"
+SETUP_RETRY="${APRSGATE_SETUP_RETRY_INTERVAL:-120}"
+RECONNECT_INTERVAL="${APRSGATE_PRIMARY_RECONNECT_INTERVAL:-120}"
 
 last_state=""
+healthy_checks=0
+failed_checks=0
+last_primary_attempt=0
 
 log() {
   printf '%s\n' "$*"
@@ -31,6 +40,28 @@ connection_active() {
 device_connected() {
   nmcli -g GENERAL.STATE device show "$1" 2>/dev/null |
     grep -q '^100'
+}
+
+primary_connection() {
+  local saved
+  if [[ -s "$PROFILE_FILE" ]]; then
+    IFS= read -r saved < "$PROFILE_FILE"
+    if [[ -n "$saved" && "$saved" != "$SETUP_CONNECTION" && "$saved" != "$FALLBACK_CONNECTION" ]]; then
+      printf '%s' "$saved"
+      return
+    fi
+  fi
+  printf '%s' "$PRIMARY_CONNECTION"
+}
+
+device_healthy() {
+  local device="$1" gateway output received
+  device_connected "$device" || return 1
+  gateway="$(nmcli -g IP4.GATEWAY device show "$device" 2>/dev/null | head -n 1)"
+  [[ -n "$gateway" ]] || return 1
+  output="$(LC_ALL=C ping -n -I "$device" -c 3 -i 0.3 -W 1 "$gateway" 2>/dev/null)" || true
+  received="$(sed -nE 's/.* ([0-9]+) received.*/\1/p' <<< "$output" | tail -n 1)"
+  [[ "$received" =~ ^[0-9]+$ && "$received" -ge 2 ]]
 }
 
 activate_connection() {
@@ -83,29 +114,72 @@ ensure_fallback() {
   fi
 }
 
+if [[ "${APRSGATE_FAILOVER_LIB_ONLY:-0}" == "1" ]]; then
+  return 0
+fi
+
 while true; do
+  exec 9>"$LOCK_FILE"
+  flock -w 30 9 || { sleep "$CHECK_INTERVAL"; continue; }
+  current_primary="$(primary_connection)"
+  now="$(date +%s)"
   if [[ ! -d "/sys/class/net/${PRIMARY_DEVICE}" ]]; then
     bind_primary_device || true
   fi
 
   if [[ -d "/sys/class/net/${PRIMARY_DEVICE}" ]]; then
-    if ! connection_active "$PRIMARY_CONNECTION" "$PRIMARY_DEVICE" ||
-       ! device_connected "$PRIMARY_DEVICE"; then
-      activate_connection "$PRIMARY_CONNECTION" "$PRIMARY_DEVICE" || true
+    if connection_active "$SETUP_CONNECTION" "$PRIMARY_DEVICE"; then
+      if (( now - last_primary_attempt >= SETUP_RETRY )); then
+        deactivate_connection "$SETUP_CONNECTION"
+        activate_connection "$current_primary" "$PRIMARY_DEVICE" || true
+        last_primary_attempt="$now"
+      fi
+    elif ! connection_active "$current_primary" "$PRIMARY_DEVICE" ||
+         ! device_connected "$PRIMARY_DEVICE"; then
+      if ! device_healthy "$FALLBACK_DEVICE" ||
+         (( now - last_primary_attempt >= RECONNECT_INTERVAL )); then
+        activate_connection "$current_primary" "$PRIMARY_DEVICE" || true
+        last_primary_attempt="$now"
+      fi
     fi
 
-    if connection_active "$PRIMARY_CONNECTION" "$PRIMARY_DEVICE" &&
-       device_connected "$PRIMARY_DEVICE"; then
-      deactivate_connection "$FALLBACK_CONNECTION"
-      set_state "primary" "primary WiFi active on ${PRIMARY_DEVICE}; fallback disabled"
+    if connection_active "$current_primary" "$PRIMARY_DEVICE" && device_healthy "$PRIMARY_DEVICE"; then
+      healthy_checks=$((healthy_checks + 1))
+      failed_checks=0
+      rm -f "$OFFLINE_FILE"
+      if (( healthy_checks >= 3 )); then
+        deactivate_connection "$FALLBACK_CONNECTION"
+        set_state "primary" "primary WiFi healthy on ${PRIMARY_DEVICE}; fallback disabled"
+      fi
     else
-      ensure_fallback
-      set_state "fallback-primary-unavailable" "primary WiFi unavailable; fallback active on ${FALLBACK_DEVICE}"
+      failed_checks=$((failed_checks + 1))
+      healthy_checks=0
+      if (( failed_checks >= 2 )); then
+        ensure_fallback
+        set_state "fallback-primary-unhealthy" "primary WiFi unhealthy; fallback active on ${FALLBACK_DEVICE}"
+        if device_healthy "$FALLBACK_DEVICE"; then
+          rm -f "$OFFLINE_FILE"
+          if connection_active "$current_primary" "$PRIMARY_DEVICE"; then
+            deactivate_connection "$current_primary"
+          fi
+        else
+          : > "$OFFLINE_FILE"
+        fi
+      fi
     fi
   else
+    healthy_checks=0
+    failed_checks=0
     ensure_fallback
+    if device_healthy "$FALLBACK_DEVICE"; then
+      rm -f "$OFFLINE_FILE"
+    else
+      : > "$OFFLINE_FILE"
+    fi
     set_state "fallback-device-missing" "primary WiFi device missing; fallback active on ${FALLBACK_DEVICE}"
   fi
 
+  flock -u 9
+  exec 9>&-
   sleep "$CHECK_INTERVAL"
 done

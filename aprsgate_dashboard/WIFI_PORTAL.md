@@ -33,10 +33,27 @@ Set a unique `APRSGATE_SETUP_PASSWORD`. The portal rejects an empty or invalid
 WPA passphrase. Also set the exact NetworkManager profile names used by the
 primary and fallback interfaces.
 
-The optional `APRSGATE_PRIMARY_USB_VENDOR` and
-`APRSGATE_PRIMARY_USB_PRODUCT` values enable driver rebinding when an external
-adapter fails to initialize after a shared USB startup. Leave both empty when
-that workaround is not needed.
+The optional `APRSGATE_PRIMARY_USB_VENDOR`, `APRSGATE_PRIMARY_USB_PRODUCT`,
+and `APRSGATE_PRIMARY_USB_DRIVER` values enable driver rebinding when an
+external adapter fails to initialize after a shared USB startup.
+
+The failover service checks the primary adapter's gateway with three ICMP
+probes. Two consecutive unhealthy checks activate the fallback; three healthy
+checks restore primary-only operation. Once the fallback is healthy, the
+unhealthy primary connection is disconnected so it cannot retain the default
+route. Primary reconnection is retried at a slower interval while the fallback
+stays connected. The portal records a newly selected Wi-Fi profile in
+`/var/lib/aprsgate-wifi/primary-profile`, which the failover service then uses.
+Both services coordinate changes through `/run/lock/aprsgate-wifi.lock`.
+If neither adapter can reach its gateway, the failover marks the system offline
+so the portal can start its setup access point. Gateway reachability checks
+the local WLAN path; it does not prove that the internet is available.
+
+For a fixed repeater and band, configure the NetworkManager primary profile
+on the device. For example, `nmcli connection modify primary-wifi
+802-11-wireless.band bg 802-11-wireless.channel 1 802-11-wireless.bssid
+AA:BB:CC:DD:EE:FF`; reconnect once to apply these values. Use the actual
+profile name, channel, and BSSID at your installation.
 
 ## Installation
 
@@ -67,8 +84,9 @@ http://10.42.0.1:8088/
 ```
 
 After a successful connection, NetworkManager retains the profile. The
-failover service periodically tries the primary profile and disables the
-fallback route once the primary interface is healthy.
+failover service periodically checks the primary profile and disables the
+fallback connection only after consecutive healthy checks. While the setup AP
+is active, primary reconnection is retried at a slower interval.
 
 ## Diagnostics
 

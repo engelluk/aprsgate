@@ -21,6 +21,9 @@ SDR_HELPER = "/usr/local/sbin/aprsgate-sdr-helper"
 PACKET_STORE = os.environ.get("APRSGATE_PACKET_STORE", "/var/lib/aprsgate-dashboard/packets.jsonl")
 MAX_STORED_PACKETS = int(os.environ.get("APRSGATE_MAX_STORED_PACKETS", "50000"))
 PACKET_STORE_LOCK = threading.Lock()
+PACKET_CACHE = None
+PACKET_CACHE_PATH = None
+PACKET_KEYS = None
 DIAGNOSTIC_SERVICES = (
     "aprsgate-dashboard.service",
     "direwolf-sdr.service",
@@ -796,10 +799,17 @@ INDEX_HTML = r"""<!doctype html>
 
     let pulse = 0;
     let packetCache = [];
+    let packetTotal = 0;
+    let packetMatchCount = 0;
+    let packetRequestId = 0;
+    let packetFilterTimer = null;
     let lastMeasurement = null;
     let activeView = "overview";
     let diagnosticsLoading = false;
     let mapLoading = false;
+    let mapPending = false;
+    let mapPendingFit = false;
+    let renderedMapKey = "";
     let mapHours = 24;
     let mapData = null;
     let stationMap = null;
@@ -1231,7 +1241,11 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function loadMapData(fitBounds = false) {
-      if (mapLoading) return;
+      if (mapLoading) {
+        mapPending = true;
+        mapPendingFit = mapPendingFit || fitBounds;
+        return;
+      }
       mapLoading = true;
       if (!mapData) els.mapUpdated.textContent = "Kartendaten werden geladen...";
       setClass(els.mapUpdated, "");
@@ -1243,13 +1257,24 @@ INDEX_HTML = r"""<!doctype html>
         const response = await fetch("/api/map?" + query.toString(), {cache: "no-store"});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         mapData = await response.json();
-        renderStationMap(fitBounds);
+        const latest = mapData.stations.features.map(feature => feature.properties.last_heard).join(",");
+        const renderKey = query.toString() + ":" + mapData.summary.position_packet_count + ":" + latest;
+        if (renderKey !== renderedMapKey || fitBounds) {
+          renderStationMap(fitBounds);
+          renderedMapKey = renderKey;
+        }
         els.mapUpdated.textContent = "Aktualisiert: " + new Date(mapData.generated_at).toLocaleString();
       } catch (error) {
         els.mapUpdated.textContent = "Fehler: " + error.message;
         setClass(els.mapUpdated, "bad");
       } finally {
         mapLoading = false;
+        if (mapPending) {
+          const pendingFit = mapPendingFit;
+          mapPending = false;
+          mapPendingFit = false;
+          loadMapData(pendingFit);
+        }
       }
     }
 
@@ -1267,27 +1292,19 @@ INDEX_HTML = r"""<!doctype html>
         loadMapData(!mapHasFitted);
       }
       if (view === "status") loadDiagnostics();
-    }
-
-    function matchesPacket(packet, filter) {
-      if (!filter) return true;
-      const needle = filter.toUpperCase();
-      return [packet.source, packet.destination, packet.path, packet.raw].some(value =>
-        String(value || "").toUpperCase().includes(needle)
-      );
+      if (view === "overview") loadPackets();
     }
 
     function renderPackets() {
       const filter = els.packetFilter.value.trim();
-      const packets = packetCache.filter(packet => matchesPacket(packet, filter));
       els.packetRows.innerHTML = "";
-      els.packetCount.textContent = String(packets.length);
-      els.packetDetail.textContent = packetCache.length
-        ? `${packetCache.length} im Journal, ${packets.length} sichtbar`
+      els.packetCount.textContent = String(packetMatchCount);
+      els.packetDetail.textContent = packetTotal
+        ? `${packetTotal} gespeichert, ${packetMatchCount} passend`
         : "noch keine decodierten Pakete im Journal";
       els.exportXlsx.href = "/export.xlsx" + (filter ? "?filter=" + encodeURIComponent(filter) : "");
 
-      if (!packets.length) {
+      if (!packetCache.length) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
         td.colSpan = 8;
@@ -1297,7 +1314,7 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
 
-      for (const packet of packets.slice(0, 120)) {
+      for (const packet of packetCache) {
         const tr = document.createElement("tr");
         const cells = [
           packet.time_local,
@@ -1318,6 +1335,24 @@ INDEX_HTML = r"""<!doctype html>
           tr.appendChild(td);
         });
         els.packetRows.appendChild(tr);
+      }
+    }
+
+    async function loadPackets() {
+      const requestId = ++packetRequestId;
+      const filter = els.packetFilter.value.trim();
+      const query = filter ? "?filter=" + encodeURIComponent(filter) : "";
+      try {
+        const response = await fetch("/api/packets" + query, {cache: "no-store"});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (requestId !== packetRequestId) return;
+        packetCache = data.packets || [];
+        packetTotal = data.total || 0;
+        packetMatchCount = data.matching || 0;
+        renderPackets();
+      } catch (error) {
+        if (requestId === packetRequestId) els.packetDetail.textContent = "Fehler: " + error.message;
       }
     }
 
@@ -1438,8 +1473,6 @@ INDEX_HTML = r"""<!doctype html>
         els.temp.textContent = data.system.temperature || "-";
         setClass(els.temp, data.system.temp_class || "");
         els.uptime.textContent = data.system.uptime || "-";
-        packetCache = data.packets || [];
-        renderPackets();
 
         els.call.textContent = text(data.config.callsign);
         els.freq.textContent = text(data.config.frequency);
@@ -1475,7 +1508,7 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("refresh").addEventListener("click", () => {
       if (activeView === "status") loadDiagnostics();
       else if (activeView === "map") loadMapData(false);
-      else loadStatus();
+      else { loadStatus(); loadPackets(); }
     });
     els.overviewTab.addEventListener("click", () => selectView("overview"));
     els.mapTab.addEventListener("click", () => selectView("map"));
@@ -1497,12 +1530,20 @@ INDEX_HTML = r"""<!doctype html>
     els.showTrack.addEventListener("change", drawSelectedTrack);
     cal.measure.addEventListener("click", measureCalibration);
     cal.apply.addEventListener("click", applyCalibration);
-    els.packetFilter.addEventListener("input", renderPackets);
+    els.packetFilter.addEventListener("input", () => {
+      ++packetRequestId;
+      clearTimeout(packetFilterTimer);
+      packetFilterTimer = setTimeout(loadPackets, 300);
+    });
     loadCalibration();
     loadStatus();
+    loadPackets();
     setInterval(() => {
       if (activeView === "overview") loadStatus();
     }, 5000);
+    setInterval(() => {
+      if (activeView === "overview") loadPackets();
+    }, 15000);
     setInterval(() => {
       if (activeView === "status") loadDiagnostics();
     }, 15000);
@@ -2111,21 +2152,57 @@ def write_stored_packets(packets):
 
 
 def stored_packets_with_latest():
+    global PACKET_CACHE, PACKET_CACHE_PATH, PACKET_KEYS
     with PACKET_STORE_LOCK:
-        stored = read_stored_packets()
-        known = {packet_key(packet) for packet in stored}
-        added = False
+        if PACKET_CACHE is None or PACKET_CACHE_PATH != PACKET_STORE:
+            loaded = read_stored_packets()
+            PACKET_CACHE = loaded[-MAX_STORED_PACKETS:]
+            PACKET_CACHE_PATH = PACKET_STORE
+            PACKET_KEYS = {packet_key(packet) for packet in PACKET_CACHE}
+            if len(loaded) > MAX_STORED_PACKETS:
+                write_stored_packets(PACKET_CACHE)
+        stored = PACKET_CACHE
+        added = []
+        new_keys = set()
         latest = parse_packets(packet_journal_lines())
         for packet in reversed(latest):
             key = packet_key(packet)
-            if key in known:
+            if key in PACKET_KEYS or key in new_keys:
                 continue
-            stored.append(packet)
-            known.add(key)
-            added = True
+            new_keys.add(key)
+            added.append(packet)
         if added:
-            write_stored_packets(stored)
-        return stored[-MAX_STORED_PACKETS:][::-1]
+            updated = stored + added
+            if len(updated) > MAX_STORED_PACKETS:
+                updated = updated[-MAX_STORED_PACKETS:]
+                write_stored_packets(updated)
+            else:
+                directory = os.path.dirname(PACKET_STORE)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
+                with open(PACKET_STORE, "a", encoding="utf-8") as handle:
+                    for packet in added:
+                        handle.write(json.dumps(packet, ensure_ascii=False, separators=(",", ":")) + "\n")
+            PACKET_CACHE = updated
+            if len(updated) == MAX_STORED_PACKETS:
+                PACKET_KEYS = {packet_key(packet) for packet in updated}
+            else:
+                PACKET_KEYS.update(new_keys)
+        return list(reversed(PACKET_CACHE))
+
+
+def packet_page(filter_text="", limit=120):
+    packets = stored_packets_with_latest()
+    total = len(packets)
+    needle = filter_text.strip().upper()
+    if needle:
+        packets = [
+            packet for packet in packets
+            if any(needle in str(packet.get(key, "")).upper() for key in (
+                "source", "destination", "path", "raw", "comment"
+            ))
+        ]
+    return {"total": total, "matching": len(packets), "packets": packets[:limit]}
 
 
 def filtered_packets(filter_text=""):
@@ -2271,7 +2348,7 @@ def map_payload(hours=24, filter_text="", reception="all", now=None):
                 compact_track[-1] = {**point, "coordinates": coordinates}
             else:
                 compact_track.append({**point, "coordinates": coordinates})
-        tracks[source] = compact_track[-300:]
+        tracks[source] = compact_track if needle else compact_track[-300:]
         features.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [longitude, latitude]},
@@ -2393,7 +2470,6 @@ def build_xlsx(packets):
 
 def status_payload():
     lines = journal_lines()
-    packets = stored_packets_with_latest()
     config = parse_config()
     socket_endpoint = active_aprsis_socket(config["igate_port"])
     return {
@@ -2404,7 +2480,6 @@ def status_payload():
         "system": system_status(),
         "config": config,
         "calibration": calibration_status(),
-        "packets": packets,
         "events": interesting_events(lines),
         "logs": lines[-80:],
     }
@@ -2487,6 +2562,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif path == "/api/status":
             self.send_json(status_payload())
+        elif path == "/api/packets":
+            query = parse_qs(parsed.query)
+            self.send_json(packet_page(query.get("filter", [""])[0][:40]))
         elif path == "/api/diagnostics":
             self.send_json(diagnostics_payload())
         elif path == "/api/map":

@@ -203,6 +203,18 @@ class MapPayloadTests(unittest.TestCase):
             point["reception"] == "direct" for point in payload["tracks"]["DM6LE-7"]
         ))
 
+    def test_callsign_filter_retains_all_received_positions(self):
+        packets = [
+            self.packet("DM6LE-7", f"2026-09-01T08:{index // 60:02d}:{index % 60:02d}+00:00", 49.0, 11.0 + index / 10000)
+            for index in range(305)
+        ]
+        config = {"callsign": "N0CALL-10", "position": "51^30.00N 000^07.00W"}
+        with patch.object(app, "stored_packets_with_latest", return_value=list(reversed(packets))), patch.object(
+            app, "parse_config", return_value=config
+        ):
+            payload = app.map_payload(0, "DM6LE-7", "direct")
+        self.assertEqual(305, len(payload["tracks"]["DM6LE-7"]))
+
 
 class PacketStoreTests(unittest.TestCase):
     def test_parallel_updates_do_not_race_on_temporary_file(self):
@@ -236,6 +248,25 @@ class PacketStoreTests(unittest.TestCase):
             with open(store, "r", encoding="utf-8") as handle:
                 stored = [json.loads(line) for line in handle]
             self.assertEqual([packet], stored)
+
+    def test_new_packet_appends_and_page_searches_full_history(self):
+        old = {"time": "2026-09-01T08:25:11+02:00", "raw": "DM6LE-7>APRS:old", "source": "DM6LE-7"}
+        new = {"time": "2026-09-12T12:00:00+00:00", "raw": "DL1ABC>APRS:new", "source": "DL1ABC"}
+        with tempfile.TemporaryDirectory() as directory:
+            store = Path(directory) / "packets.jsonl"
+            store.write_text(json.dumps(old) + "\n", encoding="utf-8")
+            with (
+                patch.object(app, "PACKET_STORE", str(store)),
+                patch.object(app, "packet_journal_lines", return_value=[]),
+                patch.object(app, "parse_packets", return_value=[new]),
+                patch.object(app, "write_stored_packets") as rewrite,
+            ):
+                page = app.packet_page("DM6LE-7")
+                self.assertEqual(2, page["total"])
+                self.assertEqual(1, page["matching"])
+                self.assertEqual([old], page["packets"])
+                rewrite.assert_not_called()
+            self.assertEqual([old, new], [json.loads(line) for line in store.read_text(encoding="utf-8").splitlines()])
 
 
 if __name__ == "__main__":

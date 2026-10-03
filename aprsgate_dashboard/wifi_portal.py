@@ -5,9 +5,15 @@ import re
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+
+try:
+    import fcntl
+except ImportError:  # The application runs on Linux; this keeps local Windows tests importable.
+    fcntl = None
 
 
 HOST = "0.0.0.0"
@@ -17,6 +23,9 @@ AP_SSID = os.environ.get("APRSGATE_SETUP_SSID", "APRSgate-Setup")
 AP_PASSWORD = os.environ.get("APRSGATE_SETUP_PASSWORD", "")
 AP_CONNECTION = os.environ.get("APRSGATE_SETUP_CONNECTION", "aprsgate-setup-ap")
 FALLBACK_CONNECTION = os.environ.get("APRSGATE_FALLBACK_WIFI_CONNECTION", "")
+PROFILE_FILE = os.environ.get("APRSGATE_PRIMARY_PROFILE_FILE", "/var/lib/aprsgate-wifi/primary-profile")
+LOCK_FILE = os.environ.get("APRSGATE_WIFI_LOCK_FILE", "/run/lock/aprsgate-wifi.lock")
+OFFLINE_FILE = os.environ.get("APRSGATE_WIFI_OFFLINE_FILE", "/run/aprsgate-wifi.offline")
 CHECK_INTERVAL_SECONDS = int(os.environ.get("APRSGATE_WIFI_CHECK_INTERVAL", "30"))
 
 
@@ -255,11 +264,24 @@ def run_nmcli(*args, check=False):
         text=True,
         capture_output=True,
         check=False,
+        timeout=60,
     )
     if check and result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "nmcli failed"
         raise RuntimeError(detail)
     return result
+
+
+@contextmanager
+def wifi_lock():
+    if fcntl is None:
+        raise RuntimeError("WiFi locking requires Linux")
+    with open(LOCK_FILE, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def nmcli_lines(*args):
@@ -300,6 +322,8 @@ def known_connections():
 
 
 def is_connected():
+    if os.path.exists(OFFLINE_FILE):
+        return False
     ssid = active_ssid()
     return bool(ssid and ssid != AP_SSID)
 
@@ -334,19 +358,6 @@ def stop_setup_ap():
         run_nmcli("connection", "down", AP_CONNECTION)
 
 
-def try_known_connections():
-    for name in known_connections():
-        # Failover may have restored connectivity while this loop was running.
-        if is_connected():
-            return True
-        print(f"wifi monitor: trying known connection {name}", flush=True)
-        result = run_nmcli("connection", "up", name, "ifname", WIFI_DEVICE)
-        if result.returncode == 0 and is_connected():
-            print(f"wifi monitor: connected via {name}", flush=True)
-            return True
-    return False
-
-
 def scan_networks():
     run_nmcli("device", "wifi", "rescan", "ifname", WIFI_DEVICE)
     time.sleep(2)
@@ -369,16 +380,26 @@ def scan_networks():
 def connect_to_network(ssid, password):
     if not ssid:
         raise ValueError("SSID fehlt")
-    stop_setup_ap()
-    args = ["device", "wifi", "connect", ssid, "ifname", WIFI_DEVICE]
-    if password:
-        args.extend(["password", password])
-    result = run_nmcli(*args)
-    if result.returncode != 0:
-        ensure_setup_ap()
-        detail = result.stderr.strip() or result.stdout.strip() or "Verbindung fehlgeschlagen"
-        raise RuntimeError(detail)
-    return active_ssid() or ssid
+    with wifi_lock():
+        stop_setup_ap()
+        args = ["device", "wifi", "connect", ssid, "ifname", WIFI_DEVICE]
+        if password:
+            args.extend(["password", password])
+        result = run_nmcli(*args)
+        if result.returncode != 0:
+            if not is_connected():
+                ensure_setup_ap()
+            detail = result.stderr.strip() or result.stdout.strip() or "Verbindung fehlgeschlagen"
+            raise RuntimeError(detail)
+        profile = run_nmcli("-g", "GENERAL.CONNECTION", "device", "show", WIFI_DEVICE, check=True).stdout.strip()
+        if not profile or profile in {AP_CONNECTION, FALLBACK_CONNECTION}:
+            raise RuntimeError("Aktives WLAN-Profil konnte nicht ermittelt werden")
+        os.makedirs(os.path.dirname(PROFILE_FILE), exist_ok=True)
+        temporary = f"{PROFILE_FILE}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(profile + "\n")
+        os.replace(temporary, PROFILE_FILE)
+        return ssid
 
 
 def validate_runtime_config():
@@ -394,12 +415,11 @@ def validate_runtime_config():
 def monitor_wifi():
     while True:
         try:
-            if is_connected():
-                stop_setup_ap()
-            elif setup_ap_active():
-                pass
-            elif not try_known_connections():
-                ensure_setup_ap()
+            with wifi_lock():
+                if is_connected():
+                    stop_setup_ap()
+                elif not setup_ap_active():
+                    ensure_setup_ap()
         except Exception as error:
             print(f"wifi monitor: {error}", flush=True)
         time.sleep(CHECK_INTERVAL_SECONDS)
